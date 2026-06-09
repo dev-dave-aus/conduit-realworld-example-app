@@ -7,6 +7,8 @@
 #      otherwise generated from backend/.env.example).
 #   3. Gives this workspace its own database so parallel workspaces don't
 #      collide, then creates it and runs migrations + seeders.
+#   4. Assigns this workspace its own backend/frontend ports so parallel
+#      worktrees can run their dev servers at the same time.
 #
 # Superset may provide these environment variables (each optional — the script
 # falls back when one is absent):
@@ -84,6 +86,93 @@ log "Using per-workspace databases: dev=$DEV_DB test=$TEST_DB"
 sed -i.bak -E "s/^DEV_DB_NAME=.*/DEV_DB_NAME=${DEV_DB}/"   "$ENV_FILE"
 sed -i.bak -E "s/^TEST_DB_NAME=.*/TEST_DB_NAME=${TEST_DB}/" "$ENV_FILE"
 rm -f "$ENV_FILE.bak"
+
+# ---------------------------------------------------------------------------
+# 2b. Per-workspace HTTP ports
+#
+# The backend (Express, $PORT) and the frontend (Vite dev server,
+# $FRONTEND_PORT) default to 3001/3000. Workspaces run in parallel worktrees,
+# so fixed ports would collide. Give each workspace its own 10-port block,
+# skipping any port already declared by a sibling worktree's backend/.env or
+# currently listening, and persist the choice so it stays stable across
+# re-runs. (frontend/vite.config.js reads these two values back.)
+# ---------------------------------------------------------------------------
+
+# Ports declared by OTHER worktrees of this repo (from their backend/.env).
+other_worktree_ports() {
+  local self="$PWD" wt env_path
+  git worktree list --porcelain 2>/dev/null \
+    | sed -n 's/^worktree //p' \
+    | while IFS= read -r wt; do
+        [ "$wt" = "$self" ] && continue
+        env_path="$wt/backend/.env"
+        [ -f "$env_path" ] || continue
+        grep -E '^(PORT|FRONTEND_PORT)=' "$env_path" | sed -E 's/^[A-Z_]+=//'
+      done
+}
+
+TAKEN_PORTS=" $(other_worktree_ports | tr '\n' ' ' || true) "
+
+# Is $1 claimed by another worktree?
+port_claimed() { case "$TAKEN_PORTS" in *" $1 "*) return 0 ;; esac; return 1; }
+
+# Is something currently listening on 127.0.0.1:$1? (mirrors postgres.sh probe)
+port_in_use() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+  fi
+}
+
+read_env_value() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- ; }
+
+# Replace "$1=…" in place, or append it if the key isn't present yet.
+set_env_value() {
+  if grep -qE "^$1=" "$ENV_FILE"; then
+    sed -i.bak -E "s|^$1=.*|$1=$2|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+  else
+    # The upstream .env.example has no trailing newline; add one before
+    # appending so we don't glue the new key onto the last line.
+    { [ -s "$ENV_FILE" ] && [ -n "$(tail -c1 "$ENV_FILE")" ] && printf '\n' >> "$ENV_FILE"; } || true
+    printf '%s=%s\n' "$1" "$2" >> "$ENV_FILE"
+  fi
+}
+
+CUR_BE_PORT="$(read_env_value PORT || true)"
+CUR_FE_PORT="$(read_env_value FRONTEND_PORT || true)"
+
+if [ -n "$CUR_BE_PORT" ] && [ -n "$CUR_FE_PORT" ] \
+   && ! port_claimed "$CUR_BE_PORT" && ! port_claimed "$CUR_FE_PORT"; then
+  # This workspace already has a non-conflicting assignment — keep it stable.
+  FRONTEND_PORT="$CUR_FE_PORT"
+  BACKEND_PORT="$CUR_BE_PORT"
+  log "Keeping this workspace's ports: frontend=$FRONTEND_PORT backend=$BACKEND_PORT"
+else
+  FRONTEND_PORT=""
+  BACKEND_PORT=""
+  block=0
+  while [ "$block" -le 100 ]; do
+    fe=$((3000 + block * 10))
+    be=$((3001 + block * 10))
+    if ! port_claimed "$fe" && ! port_claimed "$be" \
+       && ! port_in_use "$fe" && ! port_in_use "$be"; then
+      FRONTEND_PORT="$fe"
+      BACKEND_PORT="$be"
+      break
+    fi
+    block=$((block + 1))
+  done
+  if [ -z "$FRONTEND_PORT" ]; then
+    warn "Could not find a free port block; falling back to 3000/3001."
+    FRONTEND_PORT=3000
+    BACKEND_PORT=3001
+  fi
+  log "Assigned this workspace ports: frontend=$FRONTEND_PORT backend=$BACKEND_PORT"
+fi
+
+set_env_value PORT "$BACKEND_PORT"
+set_env_value FRONTEND_PORT "$FRONTEND_PORT"
 
 # ---------------------------------------------------------------------------
 # 3. PostgreSQL server — install (via Homebrew) and start if it isn't already.
