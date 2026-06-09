@@ -18,6 +18,16 @@ if [ ! -f backend/.env ]; then
   exit 0
 fi
 
+# Make sure the shared server is reachable so the drop can proceed. We may
+# start an already-installed service, but we never install and never stop it —
+# other workspaces share this server.
+# shellcheck source=.superset/postgres.sh
+. .superset/postgres.sh
+if ! pg_ready; then
+  log "PostgreSQL not responding — trying to start the existing service…"
+  pg_ensure_running || warn "Could not reach PostgreSQL; the database may not be dropped."
+fi
+
 log "Dropping this workspace's development database…"
 npm run sqlz -- db:drop || warn "Could not drop the database (already gone, or DB server unreachable)."
 

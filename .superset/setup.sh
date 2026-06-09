@@ -40,12 +40,20 @@ elif [ -n "${SUPERSET_ROOT_PATH:-}" ] && [ -f "$ROOT_ENV" ]; then
   cp "$ROOT_ENV" "$ENV_FILE"
 else
   warn "No root backend/.env found — generating one from backend/.env.example."
-  warn "Edit $ENV_FILE with real database credentials, then re-run setup."
   cp backend/.env.example "$ENV_FILE"
-  # The example ships with the mysql dialect, but this project installs the
-  # postgres driver (pg / pg-hstore), so default the dialect to postgres.
-  sed -i.bak -E 's/^([A-Z]+_DB_DIALECT)=.*/\1=postgres/' "$ENV_FILE"
+  # The example ships with mysql + placeholder creds (root / null). This project
+  # installs the postgres driver (pg / pg-hstore), and the server we start below
+  # is Homebrew Postgres, whose default superuser is the current OS user with
+  # local trust auth (no password). Default the .env to match so db:create works.
+  PG_USER="$(whoami)"
+  sed -i.bak -E \
+    -e 's/^([A-Z]+_DB_DIALECT)=.*/\1=postgres/' \
+    -e "s/^([A-Z]+_DB_USERNAME)=.*/\1=${PG_USER}/" \
+    -e 's/^([A-Z]+_DB_PASSWORD)=.*/\1=/' \
+    "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
+  warn "Generated $ENV_FILE with local Postgres defaults (user=${PG_USER})."
+  warn "Edit it if your database uses different credentials, then re-run setup."
 fi
 
 # Derive a safe, per-workspace database identifier from the workspace name
@@ -63,7 +71,23 @@ sed -i.bak -E "s/^TEST_DB_NAME=.*/TEST_DB_NAME=${TEST_DB}/" "$ENV_FILE"
 rm -f "$ENV_FILE.bak"
 
 # ---------------------------------------------------------------------------
-# 3. Database — create, migrate, seed.
+# 3. PostgreSQL server — install (via Homebrew) and start if it isn't already.
+#    Shared across workspaces. Non-fatal: if it can't be started here, the DB
+#    steps below will warn and setup still completes.
+# ---------------------------------------------------------------------------
+# shellcheck source=.superset/postgres.sh
+. .superset/postgres.sh
+
+log "Ensuring a PostgreSQL server is running on ${PG_HOST}:${PG_PORT}…"
+if pg_ensure_installed_and_running; then
+  log "PostgreSQL is up."
+else
+  warn "Could not start PostgreSQL automatically (is Homebrew installed?)."
+  warn "Install/start a server on ${PG_HOST}:${PG_PORT}, then re-run setup."
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Database — create, migrate, seed.
 #    Non-fatal: a missing/misconfigured DB server shouldn't block workspace
 #    creation. Fix backend/.env and re-run the commands below if it fails.
 # ---------------------------------------------------------------------------
