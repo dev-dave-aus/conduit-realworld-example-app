@@ -45,10 +45,18 @@ elif [ -n "${SUPERSET_ROOT_PATH:-}" ] && [ -f "$ROOT_ENV" ]; then
 else
   warn "No root backend/.env found — generating one from backend/.env.example."
   cp backend/.env.example "$ENV_FILE"
-  # The example ships with mysql + placeholder creds (root / null). This project
-  # installs the postgres driver (pg / pg-hstore), and the server we start below
-  # is Homebrew Postgres, whose default superuser is the current OS user with
-  # local trust auth (no password). Default the .env to match so db:create works.
+fi
+
+# This project only installs the postgres driver (pg / pg-hstore), and the
+# server we start below is Homebrew Postgres, whose default superuser is the
+# current OS user with local trust auth (no password). The upstream example and
+# repo .env still ship with mysql + placeholder creds (root / null), which can't
+# work here — sequelize-cli would just demand mysql2 and fail. So regardless of
+# where the .env above came from (generated, copied, or pre-existing), if it
+# isn't already postgres, rewrite the connection settings to match the local
+# server. A .env that is already postgres is left untouched, preserving any real
+# credentials the user configured.
+if grep -E '^[A-Z]+_DB_DIALECT=' "$ENV_FILE" | grep -qvE '=postgres$'; then
   PG_USER="$(whoami)"
   sed -i.bak -E \
     -e 's/^([A-Z]+_DB_DIALECT)=.*/\1=postgres/' \
@@ -56,7 +64,7 @@ else
     -e 's/^([A-Z]+_DB_PASSWORD)=.*/\1=/' \
     "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
-  warn "Generated $ENV_FILE with local Postgres defaults (user=${PG_USER})."
+  warn "Set $ENV_FILE to local Postgres defaults (dialect=postgres, user=${PG_USER}, no password)."
   warn "Edit it if your database uses different credentials, then re-run setup."
 fi
 
