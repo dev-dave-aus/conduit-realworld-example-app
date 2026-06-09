@@ -2,8 +2,8 @@
 #
 # Superset TEARDOWN script — runs automatically when a workspace is deleted.
 #
-# Drops the per-workspace development database created during setup so stale
-# databases don't pile up on the server. Best-effort: errors are logged but
+# Drops the per-workspace development and test databases created during setup so
+# stale databases don't pile up on the server. Best-effort: errors are logged but
 # never abort deletion (Superset still offers "Delete Anyway" on failure).
 
 set -uo pipefail
@@ -29,6 +29,9 @@ if ! pg_ready; then
 fi
 
 log "Dropping this workspace's development database…"
-npm run sqlz -- db:drop || warn "Could not drop the database (already gone, or DB server unreachable)."
+npm run sqlz -- db:drop || warn "Could not drop the dev database (already gone, or DB server unreachable)."
+
+log "Dropping this workspace's test database…"
+NODE_ENV=test npm run sqlz -- db:drop || warn "Could not drop the test database (already gone, or DB server unreachable)."
 
 log "Teardown complete."

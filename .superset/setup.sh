@@ -8,10 +8,14 @@
 #   3. Gives this workspace its own database so parallel workspaces don't
 #      collide, then creates it and runs migrations + seeders.
 #
-# Superset provides these environment variables:
+# Superset may provide these environment variables (each optional — the script
+# falls back when one is absent):
 #   SUPERSET_ROOT_PATH       path to the root repository
-#   SUPERSET_WORKSPACE_NAME  name of the current workspace
 #   SUPERSET_WORKSPACE_PATH  path to this workspace's worktree
+#
+# Note: Superset does NOT export a workspace *name*. Each workspace lives in its
+# own git worktree, so we derive a stable per-workspace database identifier from
+# the worktree directory instead (see below).
 
 set -euo pipefail
 
@@ -56,9 +60,12 @@ else
   warn "Edit it if your database uses different credentials, then re-run setup."
 fi
 
-# Derive a safe, per-workspace database identifier from the workspace name
-# (lowercase, non-alphanumerics collapsed to single underscores).
-WS="${SUPERSET_WORKSPACE_NAME:-default}"
+# Derive a safe, per-workspace database identifier. Superset doesn't reliably
+# export a workspace name, but we've already cd'd into this workspace's own
+# worktree above, so the directory basename is a stable, unique per-workspace
+# identifier. (SUPERSET_WORKSPACE_NAME is honored if it ever is set.)
+# Lowercase and collapse non-alphanumerics to single underscores.
+WS="${SUPERSET_WORKSPACE_NAME:-$(basename "$PWD")}"
 SLUG="$(printf '%s' "$WS" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | sed -E 's/_+/_/g; s/^_//; s/_$//')"
 [ -z "$SLUG" ] && SLUG="default"
 
